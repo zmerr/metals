@@ -56,11 +56,26 @@ class ForComprehensionFlatMapSwitchCodeAction(
           )
         )
       case termApply: Term.Apply =>
-        maybeBuildToForYieldCodeAction(
+        maybeBuildToForYieldCodeActionWithApply(
           path,
           termApply,
           document,
-          uri,
+          indentation
+        )
+      case termSelect: Term.Select
+          if termSelect.name.value == "flatMap" || termSelect.name.value == "map" =>
+        maybeBuildToForYieldCodeActionWithSelect(
+          path,
+          termSelect,
+          document,
+          indentation
+        )
+      case termName: Term.Name
+          if termName.value == "flatMap" || termName.value == "map" =>
+        maybeBuildToForYieldCodeActionWithName(
+          path,
+          termName,
+          document,
           indentation
         )
       case _ => None
@@ -78,21 +93,20 @@ class ForComprehensionFlatMapSwitchCodeAction(
       str: String
   ): l.CodeAction = ???
 
-  private def maybeBuildToForYieldCodeAction(
+  private def maybeBuildToForYieldCodeActionWithApply(
       path: AbsolutePath,
       termApply: Term.Apply,
       document: String,
-      uri: String,
       indentation: String
   ): Option[l.CodeAction] = {
     val (nameQualsList, yieldString) =
       extractForYield(List.empty, termApply, document)
     if (nameQualsList.nonEmpty) {
       val forYieldString =
-        s"""|${indentation}for {
+        s"""|for {
             |${nameQualsList.map(nameQual => s"${indentation}  ${nameQual._1} <- ${nameQual._2}").mkString("\n")}
             |${indentation}} yield {
-            |${indentation}${yieldString}
+            |${indentation}   ${yieldString}
             |${indentation}}
             |""".stripMargin
 
@@ -116,13 +130,47 @@ class ForComprehensionFlatMapSwitchCodeAction(
 
   }
 
+  private def maybeBuildToForYieldCodeActionWithSelect(
+      path: AbsolutePath,
+      termSelect: Term.Select,
+      document: String,
+      indentation: String
+  ): Option[l.CodeAction] = {
+    termSelect.parent.collect { case termApply: Term.Apply =>
+      maybeBuildToForYieldCodeActionWithApply(
+        path,
+        termApply,
+        document,
+        indentation
+      )
+    }.flatten
+  }
+
+  private def maybeBuildToForYieldCodeActionWithName(
+      path: AbsolutePath,
+      termName: Term.Name,
+      document: String,
+      indentation: String
+  ): Option[l.CodeAction] = {
+    termName.parent.collect { case termSelect: Term.Select =>
+      maybeBuildToForYieldCodeActionWithSelect(
+        path,
+        termSelect,
+        document,
+        indentation
+      )
+    }.flatten
+
+  }
+
   private def extractForYield(
       existingNameQuals: List[(String, String)],
       termApply: Term.Apply,
       document: String
   ): (List[(String, String)], String) = {
     termApply.fun match {
-      case termSelect: Term.Select if termSelect.name.value == "flatMap" =>
+      case termSelect: Term.Select
+          if termSelect.name.value == "flatMap" || termSelect.name.value == "map" =>
         val qual = termSelect.qual
         val qualString = document.substring(qual.pos.start, qual.pos.end)
         termApply.args.head match {
@@ -164,6 +212,8 @@ class ForComprehensionFlatMapSwitchCodeAction(
     case _: Term.ForYield => true
 
     case _: Term.Apply => true
+    case _: Term.Select => true
+    case _: Term.Name => true
     case _ => false
   }
 }
