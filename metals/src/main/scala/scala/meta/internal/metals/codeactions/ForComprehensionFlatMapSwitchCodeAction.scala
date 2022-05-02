@@ -43,42 +43,47 @@ class ForComprehensionFlatMapSwitchCodeAction(
     val maybeCodeAction = for {
       document <- buffers.get(path)
       applyTree <- maybeTree
-      indentation = getIndentationForPositionInDocument(applyTree.pos, document)
-    } yield applyTree match {
-      case forYeild: Term.ForYield =>
-        Some(
-          buildToFlatMapCodeAction(
+      indentation = getIndentationForPosition(applyTree.pos)
+    } yield {
+      pprint.log("inside yield")
+      applyTree match {
+        case forYeild: Term.ForYield =>
+          Some(
+            buildToFlatMapCodeAction(
+              path,
+              forYeild,
+              document,
+              uri,
+              indentation
+            )
+          )
+        case termApply: Term.Apply =>
+          pprint.log("matched on Apply")
+          maybeBuildToForYieldCodeActionWithApply(
             path,
-            forYeild,
+            termApply,
             document,
-            uri,
             indentation
           )
-        )
-      case termApply: Term.Apply =>
-        maybeBuildToForYieldCodeActionWithApply(
-          path,
-          termApply,
-          document,
-          indentation
-        )
-      case termSelect: Term.Select
-          if termSelect.name.value == "flatMap" || termSelect.name.value == "map" =>
-        maybeBuildToForYieldCodeActionWithSelect(
-          path,
-          termSelect,
-          document,
-          indentation
-        )
-      case termName: Term.Name
-          if termName.value == "flatMap" || termName.value == "map" =>
-        maybeBuildToForYieldCodeActionWithName(
-          path,
-          termName,
-          document,
-          indentation
-        )
-      case _ => None
+        //      case termSelect: Term.Select
+        //          if termSelect.name.value == "flatMap" || termSelect.name.value == "map" =>
+        //        maybeBuildToForYieldCodeActionWithSelect(
+        //          path,
+        //          termSelect,
+        //          document,
+        //          indentation
+        //        )
+        case termName: Term.Name
+            if termName.value == "flatMap" || termName.value == "map" =>
+          pprint.log("matched on Name")
+          maybeBuildToForYieldCodeActionWithName(
+            path,
+            termName,
+            document,
+            indentation
+          )
+        case _ => None
+      }
     }
 
     maybeCodeAction.flatten.toSeq
@@ -106,9 +111,8 @@ class ForComprehensionFlatMapSwitchCodeAction(
         s"""|for {
             |${nameQualsList.map(nameQual => s"${indentation}  ${nameQual._1} <- ${nameQual._2}").mkString("\n")}
             |${indentation}} yield {
-            |${indentation}   ${yieldString}
-            |${indentation}}
-            |""".stripMargin
+            |${indentation}  ${yieldString}
+            |${indentation}}""".stripMargin
 
       val codeAction = new l.CodeAction()
       val range =
@@ -136,7 +140,9 @@ class ForComprehensionFlatMapSwitchCodeAction(
       document: String,
       indentation: String
   ): Option[l.CodeAction] = {
+    pprint.log("term select parent is: \n" + termSelect.parent)
     termSelect.parent.collect { case termApply: Term.Apply =>
+      pprint.log("inside termApply Parent")
       maybeBuildToForYieldCodeActionWithApply(
         path,
         termApply,
@@ -152,7 +158,9 @@ class ForComprehensionFlatMapSwitchCodeAction(
       document: String,
       indentation: String
   ): Option[l.CodeAction] = {
+    pprint.log("parent is \n" + termName.parent)
     termName.parent.collect { case termSelect: Term.Select =>
+      pprint.log("inside term Select parent")
       maybeBuildToForYieldCodeActionWithSelect(
         path,
         termSelect,
@@ -171,26 +179,33 @@ class ForComprehensionFlatMapSwitchCodeAction(
     termApply.fun match {
       case termSelect: Term.Select
           if termSelect.name.value == "flatMap" || termSelect.name.value == "map" =>
+        pprint.log("inside termApply termSelect")
         val qual = termSelect.qual
         val qualString = document.substring(qual.pos.start, qual.pos.end)
         termApply.args.head match {
           case termFunction: Term.Function =>
-            val name =
-              termFunction.params.headOption.map(_.name.value).getOrElse("")
-            val body = termFunction.body
-            body match {
-              case bodyTermApply: Term.Apply =>
-                extractForYield(
-                  existingNameQuals :+ (name, qualString),
-                  bodyTermApply,
-                  document
-                )
-              case otherBody =>
-                (
-                  existingNameQuals :+ (name, qualString),
-                  document.substring(otherBody.pos.start, otherBody.pos.end)
-                )
-            }
+            extractForYieldOutOfFunction(
+              existingNameQuals,
+              termFunction,
+              qualString,
+              document
+            )
+
+          case termBlock: Term.Block =>
+            termBlock.stats.collect { case termFunction: Term.Function =>
+              extractForYieldOutOfFunction(
+                existingNameQuals,
+                termFunction,
+                qualString,
+                document
+              )
+            }.head
+
+          case _ =>
+            (
+              existingNameQuals,
+              document.substring(termApply.pos.start, termApply.pos.end)
+            )
         }
       case _ =>
         (
@@ -200,17 +215,51 @@ class ForComprehensionFlatMapSwitchCodeAction(
     }
   }
 
-  private def getIndentationForPositionInDocument(
-      treePos: Position,
+  /**
+   * @param existingNameQuals the Name Qual tuples which are extracted from the higher levels of the hierarchy
+   * @param termFunction the function which is passed as the main argument of `.map` or `.flatMap`
+   * @param qualString the left hand side of each enumeration item in the for yield expression
+   * @param document the text string of the whole file
+   * @return
+   */
+  private def extractForYieldOutOfFunction(
+      existingNameQuals: List[(String, String)],
+      termFunction: Term.Function,
+      qualString: String,
       document: String
-  ): String =
-    document
-      .substring(treePos.start - treePos.startColumn, treePos.start)
-      .takeWhile(_.isWhitespace)
+  ): (List[(String, String)], String) = {
+    val paramName =
+      termFunction.params.headOption.map(_.name.value).getOrElse("")
+    val body = termFunction.body
+    body match {
+      case bodyTermApply: Term.Apply =>
+        extractForYield(
+          existingNameQuals :+ (paramName, qualString),
+          bodyTermApply,
+          document
+        )
+      case otherBody =>
+        (
+          existingNameQuals :+ (paramName, qualString),
+          document.substring(otherBody.pos.start, otherBody.pos.end)
+        )
+    }
+  }
+
+  private def getIndentationForPosition(
+      treePos: Position
+  ): String = {
+    var result = ""
+    for (i <- 0 to treePos.startColumn) {
+      result = result + " "
+    }
+    result
+    //   """              """
+    // (0 to treePos.startColumn + 1 ).map(" ").mkString("")
+  }
 
   private def applyWithSingleFunction: Tree => Boolean = {
     case _: Term.ForYield => true
-
     case _: Term.Apply => true
     case _: Term.Select => true
     case _: Term.Name => true
