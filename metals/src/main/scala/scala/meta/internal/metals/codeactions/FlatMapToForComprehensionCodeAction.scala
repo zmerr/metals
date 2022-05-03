@@ -16,7 +16,7 @@ import scala.meta.pc.CancelToken
 import org.eclipse.lsp4j.CodeActionParams
 import org.eclipse.{lsp4j => l}
 
-class ForComprehensionFlatMapSwitchCodeAction(
+class FlatMapToForComprehensionCodeAction(
     trees: Trees,
     buffers: Buffers
 ) extends CodeAction {
@@ -45,18 +45,7 @@ class ForComprehensionFlatMapSwitchCodeAction(
       applyTree <- maybeTree
       indentation = getIndentationForPosition(applyTree.pos)
     } yield {
-      pprint.log("inside yield")
       applyTree match {
-        case forYeild: Term.ForYield =>
-          Some(
-            buildToFlatMapCodeAction(
-              path,
-              forYeild,
-              document,
-              uri,
-              indentation
-            )
-          )
         case termApply: Term.Apply =>
           pprint.log("matched on Apply")
           maybeBuildToForYieldCodeActionWithApply(
@@ -65,17 +54,9 @@ class ForComprehensionFlatMapSwitchCodeAction(
             document,
             indentation
           )
-        //      case termSelect: Term.Select
-        //          if termSelect.name.value == "flatMap" || termSelect.name.value == "map" =>
-        //        maybeBuildToForYieldCodeActionWithSelect(
-        //          path,
-        //          termSelect,
-        //          document,
-        //          indentation
-        //        )
+
         case termName: Term.Name
             if termName.value == "flatMap" || termName.value == "map" =>
-          pprint.log("matched on Name")
           maybeBuildToForYieldCodeActionWithName(
             path,
             termName,
@@ -90,14 +71,6 @@ class ForComprehensionFlatMapSwitchCodeAction(
 
   }
 
-  private def buildToFlatMapCodeAction(
-      path: AbsolutePath,
-      forComprehension: Term.ForYield,
-      document: String,
-      uri: String,
-      str: String
-  ): l.CodeAction = ???
-
   private def maybeBuildToForYieldCodeActionWithApply(
       path: AbsolutePath,
       termApply: Term.Apply,
@@ -109,7 +82,7 @@ class ForComprehensionFlatMapSwitchCodeAction(
     if (nameQualsList.nonEmpty) {
       val forYieldString =
         s"""|for {
-            |${nameQualsList.map(nameQual => s"${indentation}  ${nameQual._1} <- ${nameQual._2}").mkString("\n")}
+            |${nameQualsList.map(nameQual => s"${indentation}  ${nameQual.variableName} <- ${nameQual.qual}").mkString("\n")}
             |${indentation}} yield {
             |${indentation}  ${yieldString}
             |${indentation}}""".stripMargin
@@ -118,7 +91,7 @@ class ForComprehensionFlatMapSwitchCodeAction(
       val range =
         new l.Range(termApply.pos.toLSP.getStart, termApply.pos.toLSP.getEnd)
       codeAction.setTitle(
-        ForComprehensionFlatMapSwitchCodeAction.flatMapToForComprehension
+        FlatMapToForComprehensionCodeAction.flatMapToForComprehension
       )
       codeAction.setKind(this.kind)
       val forComprehensionTextEdit = new l.TextEdit(range, forYieldString)
@@ -140,9 +113,7 @@ class ForComprehensionFlatMapSwitchCodeAction(
       document: String,
       indentation: String
   ): Option[l.CodeAction] = {
-    pprint.log("term select parent is: \n" + termSelect.parent)
     termSelect.parent.collect { case termApply: Term.Apply =>
-      pprint.log("inside termApply Parent")
       maybeBuildToForYieldCodeActionWithApply(
         path,
         termApply,
@@ -158,9 +129,7 @@ class ForComprehensionFlatMapSwitchCodeAction(
       document: String,
       indentation: String
   ): Option[l.CodeAction] = {
-    pprint.log("parent is \n" + termName.parent)
     termName.parent.collect { case termSelect: Term.Select =>
-      pprint.log("inside term Select parent")
       maybeBuildToForYieldCodeActionWithSelect(
         path,
         termSelect,
@@ -171,15 +140,39 @@ class ForComprehensionFlatMapSwitchCodeAction(
 
   }
 
+  case class ForYieldEnumeration(variableName: String, qual: String)
+  case class YieldExpression(expression: String)
+
+  /**
+   * This recursive method, in each iteration, goes one level deeper in the hierarchy
+   * of nested `maps`/`flatMap`s; and extracts the the `variableName <- qual` tuples,
+   * then appends them to the `existingNameQuals` list.
+   *
+   * <p>The recursion stops, when there are no more `flatMap`s/`map`s further inward
+   * in the hierarchy to extract `variableName <- qual` enumerations from. At such
+   * a point, simply the body of the function passed as the argument of the innermost
+   * `map`/`flatMap`, is regarded as the ultimate `yield` expression. For this reason,
+   * the previously deducted yield expressions at the beginning of each iteration, get
+   * ignored, so they don't get passed as an argument to the next recursive call.
+   *
+   * <p>Notice: this method does not preserve the 'flatness' level of the original
+   * `flatMap`/`map` expression, in the produced for comprehension.
+   *
+   * @param existingNameQuals the `variableName <- qual` tuples which are extracted from the
+   *                          higher levels of the hierarchy of nested `flatMaps`/`maps`,
+   *                          which would make up the enumertions of the for yield expression, later
+   * @param termApply the whole expression which is to have the name
+   * @param document
+   * @return a tuple of (List of (variableName, Qual), the candidate yield expression)
+   */
   private def extractForYield(
-      existingNameQuals: List[(String, String)],
+      existingNameQuals: List[ForYieldEnumeration],
       termApply: Term.Apply,
       document: String
-  ): (List[(String, String)], String) = {
+  ): (List[ForYieldEnumeration], YieldExpression) = {
     termApply.fun match {
       case termSelect: Term.Select
           if termSelect.name.value == "flatMap" || termSelect.name.value == "map" =>
-        pprint.log("inside termApply termSelect")
         val qual = termSelect.qual
         val qualString = document.substring(qual.pos.start, qual.pos.end)
         termApply.args.head match {
@@ -204,44 +197,52 @@ class ForComprehensionFlatMapSwitchCodeAction(
           case _ =>
             (
               existingNameQuals,
-              document.substring(termApply.pos.start, termApply.pos.end)
+              YieldExpression(
+                document.substring(termApply.pos.start, termApply.pos.end)
+              )
             )
         }
       case _ =>
         (
           existingNameQuals,
-          document.substring(termApply.pos.start, termApply.pos.end)
+          YieldExpression(
+            document.substring(termApply.pos.start, termApply.pos.end)
+          )
         )
     }
   }
 
   /**
-   * @param existingNameQuals the Name Qual tuples which are extracted from the higher levels of the hierarchy
+   * @param existingNameQuals the `variableName <- qual` tuples which are extracted from the higher levels
+   *                          of the hierarchy of nested `flatMaps`/`maps`, which would make up
+   *                          the enumertions of the for yield expression, later
    * @param termFunction the function which is passed as the main argument of `.map` or `.flatMap`
    * @param qualString the left hand side of each enumeration item in the for yield expression
    * @param document the text string of the whole file
    * @return
    */
   private def extractForYieldOutOfFunction(
-      existingNameQuals: List[(String, String)],
+      existingNameQuals: List[ForYieldEnumeration],
       termFunction: Term.Function,
       qualString: String,
       document: String
-  ): (List[(String, String)], String) = {
+  ): (List[ForYieldEnumeration], YieldExpression) = {
     val paramName =
       termFunction.params.headOption.map(_.name.value).getOrElse("")
     val body = termFunction.body
     body match {
       case bodyTermApply: Term.Apply =>
         extractForYield(
-          existingNameQuals :+ (paramName, qualString),
+          existingNameQuals :+ ForYieldEnumeration(paramName, qualString),
           bodyTermApply,
           document
         )
       case otherBody =>
         (
-          existingNameQuals :+ (paramName, qualString),
-          document.substring(otherBody.pos.start, otherBody.pos.end)
+          existingNameQuals :+ ForYieldEnumeration(paramName, qualString),
+          YieldExpression(
+            document.substring(otherBody.pos.start, otherBody.pos.end)
+          )
         )
     }
   }
@@ -254,12 +255,9 @@ class ForComprehensionFlatMapSwitchCodeAction(
       result = result + " "
     }
     result
-    //   """              """
-    // (0 to treePos.startColumn + 1 ).map(" ").mkString("")
   }
 
   private def applyWithSingleFunction: Tree => Boolean = {
-    case _: Term.ForYield => true
     case _: Term.Apply => true
     case _: Term.Select => true
     case _: Term.Name => true
@@ -267,6 +265,6 @@ class ForComprehensionFlatMapSwitchCodeAction(
   }
 }
 
-object ForComprehensionFlatMapSwitchCodeAction {
+object FlatMapToForComprehensionCodeAction {
   val flatMapToForComprehension = "Turn into for comprehension"
 }

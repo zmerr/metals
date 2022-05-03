@@ -45,7 +45,7 @@ final class CodeActionProvider(
     new RewriteBracesParensCodeAction(trees),
     new ExtractValueCodeAction(trees, buffers),
     new CreateCompanionObjectCodeAction(trees, buffers),
-    new ForComprehensionFlatMapSwitchCodeAction(trees, buffers)
+    new FlatMapToForComprehensionCodeAction(trees, buffers)
   )
 
   def codeActions(

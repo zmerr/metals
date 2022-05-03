@@ -1,9 +1,9 @@
 package tests.codeactions
 
-import scala.meta.internal.metals.codeactions.ForComprehensionFlatMapSwitchCodeAction
+import scala.meta.internal.metals.codeactions.FlatMapToForComprehensionCodeAction
 import scala.meta.internal.metals.codeactions.RewriteBracesParensCodeAction
 
-class ForComprehensionFlatMapSwitchSuite
+class FlatMapToForComprehensionSuite
     extends BaseCodeActionLspSuite("forComprehension") {
 
   check(
@@ -22,7 +22,7 @@ class ForComprehensionFlatMapSwitchSuite
        |}
        |""".stripMargin,
     s"""|${RewriteBracesParensCodeAction.toParens}
-        |${ForComprehensionFlatMapSwitchCodeAction.flatMapToForComprehension}
+        |${FlatMapToForComprehensionCodeAction.flatMapToForComprehension}
         |""".stripMargin,
     """|object A {
        |  val a: List[Int] = List(1, 2)
